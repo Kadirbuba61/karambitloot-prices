@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-KarambitLoot — Steam CS2 Fiyat Çekici (v2.0)
+KarambitLoot — Steam CS2 Fiyat Çekici (v3.0)
 
-ByMykel'in counter-strike-price-tracker reposundan hazır Steam fiyatlarını çeker.
-Tek istek, ~10 saniyede biter. GitHub Actions timeout riski yok.
+ByMykel CSGO-API'nin skins.json'undaki 'price' alanını kullanır.
+%5 indirim uygular ve prices.json'a yazar.
 
-Çıktı formatı: { "skin_name": fiyat, ... }  (%5 indirimli)
+Not: CSGO-API'nin kendisi zaten Steam fiyatlarını içeriyor,
+bu yüzden ekstra bir tracker reposuna ihtiyaç yok.
 """
 
 import json
@@ -17,73 +18,31 @@ from pathlib import Path
 # ═══════════════════════════════════════════════════════════
 # YAPILANDIRMA
 # ═══════════════════════════════════════════════════════════
-PRICE_TRACKER_URL = "https://raw.githubusercontent.com/ByMykel/counter-strike-price-tracker/main/static/prices/latest.json"
+CSGO_API_URL = "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins.json"
 OUTPUT_FILE = "prices.json"
 DISCOUNT = 0.95              # %5 indirim (0.95 = %5 az)
-MIN_PRICE = 0.03             # Çok düşük fiyatları atla (0.03$ altı)
-TIMEOUT = 60                 # İstek timeout (saniye)
-USER_AGENT = "KarambitLoot-PriceFetcher/2.0 (https://github.com/Kadirbuba61)"
+MIN_PRICE = 0.03             # Çok düşük fiyatları atla
+TIMEOUT = 120                # Büyük dosya, 2 dk timeout
+USER_AGENT = "KarambitLoot-PriceFetcher/3.0 (https://github.com/Kadirbuba61)"
 
 
-def fetch_json(url: str) -> dict:
+def fetch_json(url: str):
     """URL'den JSON çeker."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
-        data = response.read()
-        return json.loads(data)
-
-
-def extract_price(value):
-    """
-    ByMykel fiyat tracker farklı formatlar dönebilir, hepsini destekle:
-      - number: 25.50
-      - dict:   { "steam": { "last_24h": 25.50 }, ... }
-      - dict:   { "steam": 25.50 }
-      - dict:   { "price": 25.50 }
-    """
-    if value is None:
-        return None
-
-    # Direkt sayı
-    if isinstance(value, (int, float)):
-        return float(value)
-
-    # Dict formatları
-    if isinstance(value, dict):
-        # Öncelik: steam → price → lowest → diğer
-        for key in ("steam", "price", "lowest_price", "lowest"):
-            if key in value:
-                v = value[key]
-                if isinstance(v, (int, float)):
-                    return float(v)
-                if isinstance(v, dict):
-                    # Örn: { "last_24h": 25.5, "last_7d": ... }
-                    for sub in ("last_24h", "last_7d", "last_30d", "value", "price"):
-                        if sub in v and isinstance(v[sub], (int, float)):
-                            return float(v[sub])
-                    # Herhangi bir numeric alan
-                    for sub_v in v.values():
-                        if isinstance(sub_v, (int, float)) and sub_v > 0:
-                            return float(sub_v)
-
-        # Hiçbiri yoksa: ilk numeric value'yu al
-        for v in value.values():
-            if isinstance(v, (int, float)) and v > 0:
-                return float(v)
-
-    return None
+        return json.loads(response.read())
 
 
 def main() -> int:
     print("=" * 60)
-    print("📡 KarambitLoot Price Fetcher v2.0")
+    print("📡 KarambitLoot Price Fetcher v3.0 (CSGO-API)")
     print("=" * 60)
-    print(f"Kaynak: {PRICE_TRACKER_URL}")
+    print(f"Kaynak: {CSGO_API_URL}")
     print(f"İndirim: %{(1 - DISCOUNT) * 100:.0f}")
     print(f"Çıktı: {OUTPUT_FILE}")
     print()
 
-    # Mevcut fiyatları yükle (fallback — kaynak çökerse eski veri kalsın)
+    # Mevcut fiyatları yedek olarak yükle
     existing = {}
     if Path(OUTPUT_FILE).exists():
         try:
@@ -93,10 +52,10 @@ def main() -> int:
         except Exception as e:
             print(f"⚠️  Mevcut {OUTPUT_FILE} okunamadı: {e}")
 
-    # Kaynaktan çek
+    # CSGO-API'den çek
     try:
-        print("⬇️  Fiyatlar çekiliyor...")
-        raw = fetch_json(PRICE_TRACKER_URL)
+        print("⬇️  CSGO-API'den skinler çekiliyor (30-60 sn sürebilir)...")
+        skins = fetch_json(CSGO_API_URL)
     except urllib.error.HTTPError as e:
         print(f"❌ HTTP hatası: {e.code} {e.reason}")
         return 1
@@ -104,35 +63,34 @@ def main() -> int:
         print(f"❌ Bağlantı hatası: {e}")
         return 1
 
-    if not isinstance(raw, dict):
-        print(f"❌ Beklenmeyen format: {type(raw).__name__}")
+    if not isinstance(skins, list):
+        print(f"❌ Beklenmeyen format: {type(skins).__name__}")
         return 1
 
-    print(f"✅ Kaynaktan {len(raw)} item alındı.")
+    print(f"✅ {len(skins)} skin alındı.")
     print()
 
     # İşle
     prices = {}
     skipped = 0
-    for name, value in raw.items():
-        if not name or not isinstance(name, str):
+    for skin in skins:
+        if not isinstance(skin, dict):
             skipped += 1
             continue
-        price = extract_price(value)
-        if price is None or price < MIN_PRICE:
+        name = skin.get("name")
+        price = skin.get("price")
+        if not name or not isinstance(price, (int, float)) or price < MIN_PRICE:
             skipped += 1
             continue
         # %5 indirim + 2 ondalık
-        discounted = round(price * DISCOUNT, 2)
-        prices[name] = discounted
+        prices[name] = round(price * DISCOUNT, 2)
 
     print(f"✅ {len(prices)} fiyat işlendi (%{(1 - DISCOUNT) * 100:.0f} indirimli)")
     print(f"⏭️  {skipped} item atlandı (fiyat yok / çok düşük)")
 
-    # Kaynak çöktüyse veya boş dönerse: eski veriyi koru
+    # Kaynak çöktüyse: eski veriyi koru
     if len(prices) < 100 and existing:
-        print(f"⚠️  Yeni veri az ({len(prices)} item). Mevcut {len(existing)} fiyat korunuyor.")
-        # Sadece yeni gelenleri güncelle, eskileri koru
+        print(f"⚠️  Yeni veri az ({len(prices)}). Mevcut {len(existing)} fiyat korunuyor.")
         existing.update(prices)
         prices = existing
         print(f"📦 Toplam: {len(prices)} fiyat (eski + yeni)")
