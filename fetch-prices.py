@@ -1,28 +1,34 @@
 #!/usr/bin/env python3
 """
-CS:GO/CS2 skin fiyatlarını CSGOBackpack API'den çeker.
+CS:GO/CS2 skin fiyatlarını Skinport API'den çeker.
 Tek istekte tüm fiyatlar gelir.
 """
 
 import json
+import gzip
 import urllib.request
 from pathlib import Path
 
 OUTPUT_FILE = "prices.json"
 DISCOUNT = 0.95  # %5 indirim
 
-# CSGOBackpack API - tüm item listesi (tek istek)
-API_URL = "https://csgobackpack.net/api/GetItemsList/v2/"
+# Skinport API - tüm item listesi (tek istek, ücretsiz)
+API_URL = "https://api.skinport.com/v1/items?app_id=730&currency=USD"
 
 
 def fetch_url(url, retries=3):
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept-Encoding': 'gzip'
             })
             with urllib.request.urlopen(req, timeout=60) as response:
-                return response.read()
+                data = response.read()
+                # gzip decompress (Skinport gzip ile döner)
+                if response.headers.get('Content-Encoding') == 'gzip':
+                    data = gzip.decompress(data)
+                return data
         except Exception as e:
             if attempt < retries - 1:
                 import time
@@ -32,41 +38,40 @@ def fetch_url(url, retries=3):
 
 
 def main():
-    print("📥 CSGOBackpack API'den tüm fiyatlar çekiliyor...")
+    print("📥 Skinport API'den tüm fiyatlar çekiliyor...")
 
     try:
         data = fetch_url(API_URL)
-        parsed = json.loads(data)
+        items = json.loads(data)
     except Exception as e:
         print(f"❌ API hatası: {e}")
         return
 
-    if not parsed.get("success"):
-        print("❌ API başarısız döndü")
-        return
-
-    items = parsed.get("items", {})
     print(f"📦 Toplam {len(items)} item alındı")
 
     prices = {}
     skipped = 0
 
-    for name, info in items.items():
+    for item in items:
         try:
-            # price_24h daha güncel, yoksa price kullan
-            price_data = info.get("price") or {}
-            usd_str = price_data.get("24h") or price_data.get("all_time") or price_data.get("7d")
-
-            if not usd_str:
+            name = item.get("market_hash_name")
+            if not name:
                 skipped += 1
                 continue
 
-            usd_price = float(usd_str)
+            # min_price (en ucuz satıcı) öncelikli, yoksa suggested_price
+            usd_price = item.get("min_price") or item.get("suggested_price")
+
+            if not usd_price:
+                skipped += 1
+                continue
+
+            usd_price = float(usd_price)
             if usd_price <= 0:
                 skipped += 1
                 continue
 
-            # %5 indirim uygula
+            # %5 indirim
             discounted = round(usd_price * DISCOUNT, 2)
             prices[name] = discounted
 
