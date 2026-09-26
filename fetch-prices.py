@@ -1,34 +1,29 @@
 #!/usr/bin/env python3
 """
-CS:GO/CS2 skin fiyatlarını Skinport API'den çeker.
-Tek istekte tüm fiyatlar gelir.
+Steam CS2 fiyatlarını ByMykel'in price tracker reposundan çeker.
+Bu repo her gün güncelleniyor ve Steam fiyatlarını içeriyor.
 """
 
 import json
-import gzip
 import urllib.request
 from pathlib import Path
 
 OUTPUT_FILE = "prices.json"
 DISCOUNT = 0.95  # %5 indirim
 
-# Skinport API - tüm item listesi (tek istek, ücretsiz)
-API_URL = "https://api.skinport.com/v1/items?app_id=730&currency=USD"
+# ByMykel'in counter-strike-price-tracker reposu
+# Her gün güncellenen Steam fiyatları
+API_URL = "https://raw.githubusercontent.com/ByMykel/counter-strike-price-tracker/main/static/prices/latest.json"
 
 
 def fetch_url(url, retries=3):
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept-Encoding': 'gzip'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             })
             with urllib.request.urlopen(req, timeout=60) as response:
-                data = response.read()
-                # gzip decompress (Skinport gzip ile döner)
-                if response.headers.get('Content-Encoding') == 'gzip':
-                    data = gzip.decompress(data)
-                return data
+                return response.read()
         except Exception as e:
             if attempt < retries - 1:
                 import time
@@ -38,31 +33,37 @@ def fetch_url(url, retries=3):
 
 
 def main():
-    print("📥 Skinport API'den tüm fiyatlar çekiliyor...")
+    print("📥 ByMykel Price Tracker'dan fiyatlar çekiliyor...")
+    print(f"   URL: {API_URL}")
 
     try:
         data = fetch_url(API_URL)
-        items = json.loads(data)
+        parsed = json.loads(data)
     except Exception as e:
         print(f"❌ API hatası: {e}")
         return
 
-    print(f"📦 Toplam {len(items)} item alındı")
+    # Format: [{"name": "...", "price": 12.34, ...}, ...]
+    if not isinstance(parsed, list):
+        print(f"❌ Beklenmedik format: {type(parsed)}")
+        return
+
+    print(f"📦 Toplam {len(parsed)} item alındı")
 
     prices = {}
     skipped = 0
 
-    for item in items:
+    for item in parsed:
         try:
-            name = item.get("market_hash_name")
+            name = item.get("name") or item.get("market_hash_name")
             if not name:
                 skipped += 1
                 continue
 
-            # min_price (en ucuz satıcı) öncelikli, yoksa suggested_price
-            usd_price = item.get("min_price") or item.get("suggested_price")
+            # price veya steam_price_median
+            usd_price = item.get("price") or item.get("steam") or item.get("steam_price")
 
-            if not usd_price:
+            if usd_price is None:
                 skipped += 1
                 continue
 
@@ -79,7 +80,6 @@ def main():
             skipped += 1
             continue
 
-    # Kaydet
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         json.dump(prices, f, ensure_ascii=False, indent=2)
 
